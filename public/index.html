@@ -267,7 +267,7 @@
 
     <!-- Account Tab - No API stuff -->
     <div class="tab-panel" id="tab-account">
-      <div class="grid-2"><div><div class="card"><div class="card-header"><span>👤 Profile</span></div><label>Name</label><input id="profileName" placeholder="Full name"><label>Email</label><input id="profileEmail" placeholder="Email"><button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="saveProfile()">Save Changes</button></div><div class="card"><div class="card-header"><span>💰 Plan & Billing</span></div><div id="planDisplay">Current Plan: Professional</div><div>Credits remaining: <span id="planCredits">1,250</span></div><button class="btn btn-secondary btn-sm" style="margin-top:12px;" onclick="openModal('pricingModal')">Upgrade Plan</button></div></div><div><div class="card"><div class="card-header"><span>📞 Connected Numbers</span><button class="btn btn-primary btn-sm" onclick="simulateAddNumber()">+ Add Number</button></div><div id="connectedNumbersList"></div></div></div></div>
+      <div class="grid-2"><div><div class="card"><div class="card-header"><span>👤 Profile</span></div><label>Name</label><input id="profileName" placeholder="Full name"><label>Email</label><input id="profileEmail" placeholder="Email"><button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="saveProfile()">Save Changes</button></div><div class="card"><div class="card-header"><span>💰 Plan & Billing</span></div><div id="planDisplay">Current Plan: Professional</div><div>Credits remaining: <span id="planCredits">1,250</span></div><button class="btn btn-secondary btn-sm" style="margin-top:12px;" onclick="openModal('pricingModal')">Upgrade Plan</button></div></div><div><div class="card"><div class="card-header"><span>📞 Connected WhatsApp Numbers</span></div><div id="waAccountsList"><div style="color:var(--text3);font-size:13px;">No numbers connected yet.</div></div><button class="btn btn-primary" style="margin-top:16px;width:100%;" onclick="startEmbeddedSignup()">➕ Connect WhatsApp Number</button><div id="waConnectStatus" style="margin-top:10px;font-size:13px;"></div></div></div></div>
     </div>
   </div>
 </div>
@@ -439,4 +439,106 @@
   loadFromStorage();
 </script>
 </body>
-</html>
+</html><script>
+  // ─── WA Embedded Signup ───────────────────────────────────────
+  const META_APP_ID = '1316992410378026'; // replace with your app ID
+
+  function startEmbeddedSignup() {
+    const { data: { session } } = sb.auth.getSession().then(({ data: { session } }) => {
+      if (!session) { showToast('Please log in first', true); return; }
+
+      const userId = session.user.id;
+      const state  = btoa(JSON.stringify({ user_id: userId, ts: Date.now() }));
+
+      const popup = window.open(
+        `https://www.facebook.com/dialog/oauth` +
+        `?client_id=${META_APP_ID}` +
+        `&display=popup` +
+        `&response_type=code` +
+        `&scope=whatsapp_business_management,whatsapp_business_messaging,business_management` +
+        `&redirect_uri=${encodeURIComponent(window.location.origin + '/wa-callback')}` +
+        `&state=${state}`,
+        'wa_signup',
+        'width=600,height=700,scrollbars=yes'
+      );
+
+      const status = document.getElementById('waConnectStatus');
+      status.innerHTML = '<span style="color:var(--amber)">⏳ Waiting for WhatsApp connection...</span>';
+
+      // Listen for popup to close or message
+      const timer = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(timer);
+          status.innerHTML = '';
+          loadWaAccounts(); // refresh list
+        }
+      }, 1000);
+
+      // Listen for postMessage from callback page
+      window.addEventListener('message', async (e) => {
+        if (e.data?.type !== 'WA_CODE') return;
+        clearInterval(timer);
+        popup.close();
+        status.innerHTML = '<span style="color:var(--amber)">⏳ Saving account...</span>';
+
+        try {
+          const res = await fetch('/api/wa/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: e.data.code, user_id: userId })
+          });
+          const data = await res.json();
+          if (data.success) {
+            status.innerHTML = '';
+            showToast('✅ WhatsApp number connected!');
+            loadWaAccounts();
+          } else {
+            status.innerHTML = `<span style="color:var(--red)">${data.error}</span>`;
+          }
+        } catch (err) {
+          status.innerHTML = `<span style="color:var(--red)">Connection failed</span>`;
+        }
+      }, { once: true });
+    });
+  }
+
+  // ─── Load WA Accounts ─────────────────────────────────────────
+  async function loadWaAccounts() {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return;
+
+    try {
+      const res  = await fetch(`/api/wa/accounts?user_id=${session.user.id}`);
+      const data = await res.json();
+      const div  = document.getElementById('waAccountsList');
+
+      if (!data.length) {
+        div.innerHTML = '<div style="color:var(--text3);font-size:13px;">No numbers connected yet.</div>';
+        return;
+      }
+
+      div.innerHTML = data.map(a => `
+        <div class="data-row">
+          <div>
+            <b>${a.display_name || a.phone_number}</b><br>
+            <span style="color:var(--text3);font-size:12px;">${a.phone_number}</span><br>
+            <span class="badge badge-green">${a.quality_rating}</span>
+            ${a.is_active ? '<span class="badge badge-green">● Active</span>' : ''}
+          </div>
+        </div>
+      `).join('');
+
+      // Also update dashboard primary number
+      if (data[0]) {
+        document.getElementById('primaryNumberDisplay').innerText = data[0].phone_number;
+      }
+    } catch (err) {
+      console.error('loadWaAccounts:', err);
+    }
+  }
+
+  // Load WA accounts after login
+  sb.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_IN') setTimeout(loadWaAccounts, 500);
+  });
+</script>
