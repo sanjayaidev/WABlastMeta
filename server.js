@@ -127,3 +127,19 @@ app.listen(PORT, () => {
   console.log(`WaBlast running on ${SELF_URL}`);
   startPinger();
 });
+
+// WA OAuth Callback Page — receives code from Meta, passes to parent window
+app.get('/wa-callback', (req, res) => {
+  const { code, error } = req.query;
+  res.send(`<!DOCTYPE html><html><body>
+    <script>
+      if ('${error}') {
+        window.opener?.postMessage({ type: 'WA_ERROR', error: '${error}' }, '*');
+      } else {
+        window.opener?.postMessage({ type: 'WA_CODE', code: '${code}' }, '*');
+      }
+      window.close();
+    </script>
+    <p>Connecting WhatsApp... this window will close automatically.</p>
+  </body></html>`);
+});
