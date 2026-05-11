@@ -50,6 +50,7 @@
     .auth-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--text3); font-size: 12px; }
     .auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--border2); }
     .oauth-btn { width: 100%; padding: 13px; background: var(--surface2); color: var(--text); font-weight: 600; border: 1px solid var(--border2); border-radius: 14px; cursor: pointer; font-family: 'Inter', sans-serif; font-size: 14px; display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 10px; }
+    .oauth-btn:hover { border-color: var(--text3); }
     .auth-toggle { text-align: center; font-size: 13px; color: var(--text2); margin-top: 20px; }
     .auth-toggle a { color: var(--green); cursor: pointer; font-weight: 600; }
     .auth-error { background: var(--red-dim); color: var(--red); border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; display: none; }
@@ -135,11 +136,8 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .template-preview { background: #0e2a1e; border: 1px solid #2a4530; border-radius: 24px; padding: 20px; font-family: 'Inter', sans-serif; max-width: 320px; margin: 0 auto; }
     .placeholder-row { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
-    .campaign-progress { height: 6px; background: var(--border2); border-radius: 3px; overflow: hidden; margin: 16px 0; }
-    .campaign-progress-bar { height: 100%; background: var(--green); width: 0%; transition: width 0.3s; }
-    hr { border-color: var(--border); margin: 16px 0; }
-    pre { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text2); white-space: pre-wrap; word-break: break-all; background: var(--bg); padding: 12px; border-radius: 12px; }
     select[multiple] { min-height: 120px; }
+    hr { border-color: var(--border); margin: 16px 0; }
   </style>
 </head>
 <body>
@@ -155,7 +153,14 @@
     <div class="form-group"><label>Password</label><input type="password" id="authPass" placeholder="••••••••"></div>
     <button class="auth-btn" id="authSubmitBtn">Sign In →</button>
     <div class="auth-divider">or continue with</div>
-    <button class="oauth-btn" onclick="handleGoogleLogin()">Continue with Google</button>
+    <button class="oauth-btn" onclick="handleGoogleLogin()">
+      <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-3.59-13.46-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Continue with Google
+    </button>
+    <button class="oauth-btn" onclick="handleFacebookLogin()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="#1877F2"><path d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.792-4.697 4.533-4.697 1.312 0 2.686.235 2.686.235v2.97h-1.514c-1.491 0-1.956.93-1.956 1.886v2.269h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/></svg>
+      Continue with Facebook
+    </button>
     <div class="auth-toggle" id="authToggle">Don't have an account? <a onclick="toggleAuthMode()">Sign up free</a></div>
   </div>
 </div>
@@ -285,7 +290,7 @@
         </div>
         <div class="card">
           <div class="card-header"><span>💰 Credits & Transactions</span><button class="btn btn-purple btn-sm" onclick="openBuyModal()">+ Buy Credits</button></div>
-          <div style="overflow-x: auto; max-height: 400px; overflow-y: auto;"><table style="width:100%"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th><th>Description</th></tr></thead><tbody id="transactionsBody"></tbody></table></div>
+          <div style="overflow-x: auto; max-height: 400px; overflow-y: auto;"><table style="width:100%"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th><th>Description</th></tr></thead><tbody id="transactionsBody"></tbody>}</div>
         </div>
       </div>
     </div>
@@ -410,7 +415,21 @@ async function handleEmailAuth() {
 }
 
 async function handleGoogleLogin() {
-  showToast('Google OAuth configured in Supabase. Use email/password for demo.', true);
+  // This will trigger Supabase OAuth redirect
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.origin }
+  });
+  if (error) showToast(error.message, true);
+}
+
+async function handleFacebookLogin() {
+  // This will trigger Supabase OAuth redirect
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'facebook',
+    options: { redirectTo: window.location.origin }
+  });
+  if (error) showToast(error.message, true);
 }
 
 function logout() {
@@ -800,7 +819,7 @@ async function loadCampaignLogs() {
     document.getElementById('campaignLogsList').innerHTML = `
       <table style="width:100%"><thead><tr><th>Phone</th><th>Name</th><th>Status</th><th>Error</th><th>Time</th></tr></thead><tbody>
       ${res.logs.map(l => `<tr><td>${l.phone}</td><td>${escapeHtml(l.contact_name || '')}</td><td><span class="badge badge-${l.status}">${l.status}</span></td><td style="font-size:11px;">${escapeHtml(l.error_reason || '—')}</td><td style="font-size:11px;">${new Date(l.created_at).toLocaleString()}</td></tr>`).join('')}
-      </tbody></table>
+      </tbody>}
       ${res.logs.length === 0 ? '<div class="data-row">No logs yet</div>' : ''}
     `;
   }
@@ -893,9 +912,15 @@ function loadInbox() {
   document.getElementById('inboxList').innerHTML = '<div class="data-row">Inbox requires webhook configuration. Set up /webhook endpoint on your server.</div>';
 }
 
-// WA Embedded Signup (placeholder)
+// WA Embedded Signup (Meta OAuth)
 function startEmbeddedSignup() {
-  showToast('WhatsApp number connection requires Meta App OAuth. Configure in Express server.', true);
+  // This should open the Meta OAuth popup
+  const popup = window.open(
+    '/auth/facebook?provider=facebook',
+    'facebook-oauth',
+    'width=600,height=700'
+  );
+  showToast('Redirecting to Facebook for WhatsApp number connection...');
 }
 
 // Utility
@@ -935,6 +960,7 @@ if (savedToken) {
 // Expose functions globally
 window.toggleAuthMode = toggleAuthMode;
 window.handleGoogleLogin = handleGoogleLogin;
+window.handleFacebookLogin = handleFacebookLogin;
 window.doLogout = logout;
 window.toggleSidebar = toggleSidebar;
 window.openBuyModal = openBuyModal;
