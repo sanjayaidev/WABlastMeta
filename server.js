@@ -131,7 +131,13 @@ app.get('/health', (_req, res) => {
 app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'))
 })
-
+app.get('/privacy', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'privacy.html'))
+})
+ 
+app.get('/terms', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'terms.html'))
+})
 // ================================================================
 // WA EMBEDDED SIGNUP — STEP 1
 // Frontend opens a popup to this URL which loads the Meta JS SDK
