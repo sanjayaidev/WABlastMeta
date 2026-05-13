@@ -679,34 +679,37 @@ async function processQueueItem(item) {
   const { id: queueId, campaign_id, user_id, phone, contact_name } = item
 
   // Mark as processing (atomic — prevents double-send if two workers run)
-  const claimRes = await sbFetch(
-    `/wb_campaign_queue?id=eq.${queueId}&status=eq.pending`,
-    {
-      method:  'PATCH',
-      headers: { 'Prefer': 'return=representation' },
-      body:    JSON.stringify({ status: 'processing', updated_at: new Date().toISOString() }),
-    }
-  )
+  const campRes = await sbFetch(
+  `/wb_campaigns?id=eq.${campaign_id}&limit=1`
+)
+const campaign = campRes.data?.[0]
+if (!campaign || campaign.status === 'paused') {
+  await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'paused' }),
+  })
+  return
+}
+if (campaign.status !== 'running') {
+  await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'failed' }),
+  })
+  return
+}
 
-  // If no rows updated, another worker got it first — skip
-  if (!claimRes.data?.length) return
-
-  try {
-    // Get campaign + template details
-    const campRes = await sbFetch(
-      `/wb_campaigns?id=eq.${campaign_id}&select=*,wb_templates(*)&limit=1`
-    )
-    const campaign = campRes.data?.[0]
-
-    if (!campaign || campaign.status === 'paused') {
-      // Campaign was paused — revert this item to paused
-      await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
-        method: 'PATCH',
-        body:   JSON.stringify({ status: 'paused' }),
-      })
-      return
-    }
-
+// Fetch template separately
+const tplRes = await sbFetch(
+  `/wb_templates?id=eq.${campaign.template_id}&limit=1`
+)
+const tpl = tplRes.data?.[0]
+if (!tpl) {
+  await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'failed', error_reason: 'Template not found' }),
+  })
+  return
+}
     if (campaign.status !== 'running') {
       // Campaign cancelled or completed — mark item failed
       await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
