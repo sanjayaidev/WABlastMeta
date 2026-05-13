@@ -678,87 +678,68 @@ async function campaignWorkerTick() {
 async function processQueueItem(item) {
   const { id: queueId, campaign_id, user_id, phone, contact_name } = item
 
-  // Mark as processing (atomic — prevents double-send if two workers run)
-  const campRes = await sbFetch(
-  `/wb_campaigns?id=eq.${campaign_id}&limit=1`
-)
-const campaign = campRes.data?.[0]
-if (!campaign || campaign.status === 'paused') {
-  await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status: 'paused' }),
-  })
-  return
-}
-if (campaign.status !== 'running') {
-  await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status: 'failed' }),
-  })
-  return
-}
+  const claimRes = await sbFetch(
+    `/wb_campaign_queue?id=eq.${queueId}&status=eq.pending`,
+    {
+      method:  'PATCH',
+      headers: { 'Prefer': 'return=representation' },
+      body:    JSON.stringify({ status: 'processing', updated_at: new Date().toISOString() }),
+    }
+  )
+  if (!claimRes.data?.length) return
 
-// Fetch template separately
-const tplRes = await sbFetch(
-  `/wb_templates?id=eq.${campaign.template_id}&limit=1`
-)
-const tpl = tplRes.data?.[0]
-if (!tpl) {
-  await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status: 'failed', error_reason: 'Template not found' }),
-  })
-  return
-}
-    if (campaign.status !== 'running') {
-      // Campaign cancelled or completed — mark item failed
+  try {
+    const campRes = await sbFetch(`/wb_campaigns?id=eq.${campaign_id}&limit=1`)
+    const campaign = campRes.data?.[0]
+
+    if (!campaign || campaign.status === 'paused') {
       await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
-        method: 'PATCH',
-        body:   JSON.stringify({ status: 'failed' }),
+        method: 'PATCH', body: JSON.stringify({ status: 'paused' }),
       })
       return
     }
 
-    const tpl         = campaign.wb_templates
-    const placeholders = tpl?.placeholders || []
+    if (campaign.status !== 'running') {
+      await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
+        method: 'PATCH', body: JSON.stringify({ status: 'failed' }),
+      })
+      return
+    }
 
-    // Check per-user sending limits
+    const tplRes = await sbFetch(`/wb_templates?id=eq.${campaign.template_id}&limit=1`)
+    const tpl = tplRes.data?.[0]
+    if (!tpl) {
+      await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
+        method: 'PATCH', body: JSON.stringify({ status: 'failed', error_reason: 'Template not found' }),
+      })
+      return
+    }
+
     const limitOk = await checkSendingLimits(user_id)
     if (!limitOk) {
-      // Revert to pending — will retry on next tick
       await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
-        method: 'PATCH',
-        body:   JSON.stringify({ status: 'pending' }),
+        method: 'PATCH', body: JSON.stringify({ status: 'pending' }),
       })
       console.log(`[worker] rate limit hit for user ${user_id} — requeuing`)
       return
     }
 
-    // Get contact details for placeholder mapping
-    const contactRes = await sbFetch(
-      `/wb_contacts?id=eq.${item.contact_id}&limit=1`
-    )
+    const contactRes = await sbFetch(`/wb_contacts?id=eq.${item.contact_id}&limit=1`)
     const contact = contactRes.data?.[0] || { name: contact_name, phone }
 
-    // Build ordered placeholder values
-    const orderedPositions = placeholders
-      .slice()
-      .sort((a, b) => a.position - b.position)
-
+    const placeholders = tpl.placeholders || []
+    const orderedPositions = placeholders.slice().sort((a, b) => a.position - b.position)
     const placeholderValues = orderedPositions.map(ph => {
       const mappedField = campaign.placeholder_mapping?.[`{{${ph.position}}}`]
-      if (mappedField === 'name')    return contact.name   || ''
-      if (mappedField === 'phone')   return contact.phone  || ''
+      if (mappedField === 'name')    return contact.name    || ''
+      if (mappedField === 'phone')   return contact.phone   || ''
       if (mappedField === 'message') return contact.message || ''
       if (mappedField && mappedField !== 'custom') return contact[mappedField] || ''
-      // Custom static value stored directly in mapping
       const customVal = campaign.placeholder_mapping?.[`custom_${ph.position}`]
       if (customVal) return customVal
-      // Fallback to sample
       return ph.sample || ''
     })
 
-    // Call edge function to send (handles credit deduction + logging)
     const sendResult = await callEdgeInternal('sendTemplateMessage', {
       phone,
       template_name:      tpl.name,
@@ -771,64 +752,36 @@ if (!tpl) {
     })
 
     if (sendResult.success) {
-      // Mark queue item sent
       await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
         method: 'PATCH',
-        body:   JSON.stringify({
-          status:     'sent',
-          sent_at:    new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }),
+        body:   JSON.stringify({ status: 'sent', sent_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
       })
-
-      // Track hourly/daily send count
       await incrementSendCount(user_id)
-
     } else {
-      // Mark failed
       await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
         method: 'PATCH',
-        body:   JSON.stringify({
-          status:       'failed',
-          error_reason: sendResult.message || 'Unknown error',
-          updated_at:   new Date().toISOString(),
-        }),
+        body:   JSON.stringify({ status: 'failed', error_reason: sendResult.message || 'Unknown error', updated_at: new Date().toISOString() }),
       })
-
-      // If out of credits — pause the entire campaign
       if (sendResult.out_of_credits) {
         await sbFetch(`/wb_campaigns?id=eq.${campaign_id}`, {
-          method: 'PATCH',
-          body:   JSON.stringify({
-            status:     'paused',
-            updated_at: new Date().toISOString(),
-          }),
+          method: 'PATCH', body: JSON.stringify({ status: 'paused' }),
         })
-        // Revert all remaining pending items to paused
-        await sbFetch(
-          `/wb_campaign_queue?campaign_id=eq.${campaign_id}&status=eq.pending`,
-          {
-            method: 'PATCH',
-            body:   JSON.stringify({ status: 'paused' }),
-          }
-        )
+        await sbFetch(`/wb_campaign_queue?campaign_id=eq.${campaign_id}&status=eq.pending`, {
+          method: 'PATCH', body: JSON.stringify({ status: 'paused' }),
+        })
         console.log(`[worker] campaign ${campaign_id} paused — out of credits`)
       }
     }
 
-    // Check if all queue items for this campaign are done
     await checkCampaignCompletion(campaign_id)
 
   } catch (err) {
     console.error(`[worker] error processing queue item ${queueId}:`, err.message)
-    // Revert to pending so it retries
     await sbFetch(`/wb_campaign_queue?id=eq.${queueId}`, {
-      method: 'PATCH',
-      body:   JSON.stringify({ status: 'pending' }),
+      method: 'PATCH', body: JSON.stringify({ status: 'pending' }),
     }).catch(() => {})
   }
 }
-
 // ────────────────────────────────────────────────────────────────
 // Check if user has hit their hourly/daily send limit
 // Limits stored in wb_settings: hour_limit, day_limit
