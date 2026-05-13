@@ -46,6 +46,32 @@ const activeCampaigns = {}
 // ================================================================
 // HELPERS
 // ================================================================
+async function handleStopCommand(userId, phone, contactName, messageId) {
+  // 1. Add to blocklist
+  await sbFetch('/wb_blocklist', {
+    method: 'POST',
+    body: JSON.stringify({
+      user_id: userId,
+      phone: phone,
+      reason: 'STOP',
+      source: 'incoming_message',
+      original_message_id: messageId,
+      created_at: new Date().toISOString()
+    }),
+  })
+  
+  // 2. Update contact status
+  await sbFetch(`/wb_contacts?user_id=eq.${userId}&phone=eq.${phone}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      status: 'unsubscribed',
+      unsubscribed_at: new Date().toISOString()
+    }),
+  })
+  
+  console.log(`[STOP] ${phone} unsubscribed`)
+}
+
 async function updateCampaignStats(campaign_id, sent_count, failed_count) {
   await sbFetch(`/wb_campaigns?id=eq.${campaign_id}`, {
     method: 'PATCH',
@@ -642,15 +668,6 @@ async function runSendLoop(campaign_id) {
       // INSERT FAILED LOG TO DB
       await insertCampaignLog(campaign_id, contact.phone, contact.name, 'failed', errorMsg)
     }
-
-    // Add to log
-    job.log.push({
-      time:   new Date().toISOString(),
-      phone:  contact.phone,
-      name:   contact.name || '',
-      status: success ? 'sent' : 'failed',
-      error:  errorMsg,
-    })
 
     // Delay between messages
     if (i < contacts.length - 1 && job.status === 'running') {
