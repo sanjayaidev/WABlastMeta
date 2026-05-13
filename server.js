@@ -46,6 +46,21 @@ const activeCampaigns = {}
 // ================================================================
 // HELPERS
 // ================================================================
+async function incrementSentCount(accountId, userId) {
+  // Increment daily counter
+  await sbFetch(`/wa_accounts?id=eq.${accountId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      messages_sent_today: sbFetch.sql`messages_sent_today + 1`,
+      messages_sent_total: sbFetch.sql`messages_sent_total + 1`,
+      updated_at: new Date().toISOString()
+    }),
+  })
+  
+  // Reset daily counter if new day (handled by Supabase cron or check on fetch)
+  // For now, just increment and rely on daily reset via separate cron job
+}
+
 async function handleStopCommand(userId, phone, contactName, messageId) {
   // 1. Add to blocklist
   await sbFetch('/wb_blocklist', {
@@ -380,7 +395,7 @@ app.post('/api/campaign/start', async (req, res) => {
   const { campaign_id, user_id } = req.body
   if (!campaign_id || !user_id)
     return res.status(400).json({ error: 'campaign_id and user_id required' })
-
+  
   // If already running, reject
   if (activeCampaigns[campaign_id]?.status === 'running')
     return res.status(400).json({ error: 'Campaign already running' })
@@ -399,17 +414,41 @@ app.post('/api/campaign/start', async (req, res) => {
       return res.status(400).json({ error: 'Template is not approved' })
 
     // Fetch contacts
-    let contactQuery = `/wb_contacts?user_id=eq.${user_id}&order=created_at.asc`
+    let contactQuery = `/wb_contacts?user_id=eq.${user_id}&status=ne.unsubscribed&optin=eq.true&order=created_at.asc`
     if (campaign.group_name) contactQuery += `&group_name=eq.${encodeURIComponent(campaign.group_name)}`
     const contactsRes = await sbFetch(contactQuery)
     const contacts = contactsRes.data || []
     if (!contacts.length) return res.status(400).json({ error: 'No contacts found' })
-
+    // After fetching contacts, filter out blocklisted ones
+    const blocklistRes = await sbFetch(`/wb_blocklist?user_id=eq.${user_id}&select=phone`)
+    const blockedPhones = blocklistRes.data?.map(b => b.phone) || []
+    const filteredContacts = contacts.filter(c => !blockedPhones.includes(c.phone))
     // Fetch WA account
     const accountRes = await sbFetch(`/wa_accounts?user_id=eq.${user_id}&is_active=eq.true&limit=1`)
     const account = accountRes.data?.[0]
     if (!account) return res.status(400).json({ error: 'No WhatsApp account connected' })
+    // Check quality rating before starting
+    if (account.quality_rating === 'RED') {
+      return res.status(400).json({ 
+        error: 'Cannot start campaign. Your WhatsApp number quality rating is RED. Please check Meta Business Suite for details.' 
+      })
+    }
+    
+    // Optional: Warn if YELLOW but allow
+    if (account.quality_rating === 'YELLOW') {
+      console.log(`[warning] User ${user_id} has YELLOW quality rating`)
+    }
+    // Check daily limit from settings
+    const dailyLimit = settings.day_limit || 0
+    if (dailyLimit > 0 && account.messages_sent_today >= dailyLimit) {
+      return res.status(400).json({ 
+        error: `Daily limit reached. You have sent ${account.messages_sent_today} of ${dailyLimit} messages today.` 
+      })
+    }
 
+// Check hourly limit
+const hourlyLimit = settings.hour_limit || 0
+// You'll need a separate `messages_sent_this_hour` column in wa_accounts for this
     // Check credits
     const profileRes = await sbFetch(`/wb_profiles?id=eq.${user_id}&limit=1`)
     const profile = profileRes.data?.[0]
@@ -538,7 +577,16 @@ async function runSendLoop(campaign_id) {
   if (!job) return
 
   const { template, account, contacts, settings } = job
-
+  // Re-check quality before each send (in case it dropped during campaign)
+  if (job.account.quality_rating === 'RED') {
+    job.status = 'paused'
+    await sbFetch(`/wb_campaigns?id=eq.${campaign_id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'paused' }),
+    })
+    console.log(`[campaign] ${campaign_id} paused due to RED quality`)
+    return
+  }
   // Build placeholder map from campaign
   const placeholderMapping = job.campaign.placeholder_mapping || {}
 
@@ -548,7 +596,7 @@ async function runSendLoop(campaign_id) {
       job.currentIndex = i
       return
     }
-
+    
     const contact = contacts[i]
     job.currentIndex = i + 1
 
@@ -661,7 +709,8 @@ async function runSendLoop(campaign_id) {
     } catch (err) {
       errorMsg = err.message
       job.failed++
-      
+      // Update WA account sent counters
+      await incrementSentCount(account.id, job.user_id)
       // UPDATE CAMPAIGN FAILED COUNT IN DB
       await updateCampaignStats(campaign_id, job.sent, job.failed)
       
@@ -760,7 +809,12 @@ async function handleIncomingMessage(msg, phoneNumberId, contacts) {
   const senderName  = contacts?.[0]?.profile?.name || msg.from
   let messageText   = ''
   if (msg.type === 'text') messageText = msg.text?.body || ''
-
+  if (messageText && /^(stop|unsubscribe|end|stopall|quit|cancel)$/i.test(messageText.trim())) {
+  await handleStopCommand(userId, msg.from, senderName, msg.id)
+  // Send confirmation reply
+  await sendAutoReply(msg.from, messageText, settings, account)
+  return // Don't save to inbox or process further
+}
   await sbFetch('/wb_inbox', {
     method: 'POST',
     body: JSON.stringify({
