@@ -560,7 +560,6 @@ async function runSendLoop(campaign_id) {
   const placeholderMapping = job.campaign.placeholder_mapping || {}
 
   for (let i = job.currentIndex; i < contacts.length; i++) {
-    // Check pause/stop on every iteration
     if (job.status !== 'running') {
       job.currentIndex = i
       return
@@ -569,101 +568,71 @@ async function runSendLoop(campaign_id) {
     job.currentIndex = i + 1
     const contact = contacts[i]
 
-    // ── Build template components ──────────────────────────────
-    const placeholders = (template.placeholders || []).slice().sort((a, b) => a.position - b.position)
-
-    const bodyParams = placeholders.map(ph => {
-      const field = placeholderMapping[`{{${ph.position}}}`]
-      if (field === 'name')    return contact.name    || ''
-      if (field === 'phone')   return contact.phone   || ''
-      if (field === 'message') return contact.message || ''
-      const customVal = placeholderMapping[`custom_${ph.position}`]
-      return customVal || ph.sample || ''
-    })
-
-    const templateComponents = []
-
-    // Header media (only for IMAGE / VIDEO / DOCUMENT)
-    if (
-      template.header_type &&
-      template.header_type !== 'NONE' &&
-      template.header_type !== 'TEXT' &&
-      template.header_type !== 'LOCATION' &&
-      template.header_media_url
-    ) {
-      const mediaKey = template.header_type === 'IMAGE'    ? 'image'
-                     : template.header_type === 'VIDEO'    ? 'video'
-                     : 'document'
-      templateComponents.push({
-        type: 'header',
-        parameters: [{ type: mediaKey, [mediaKey]: { link: template.header_media_url } }],
-      })
-    }
-
-    // Body params
-    if (bodyParams.length > 0) {
-      templateComponents.push({
-        type: 'body',
-        parameters: bodyParams.map(v => ({ type: 'text', text: String(v) })),
-      })
-    }
-
-    // ── Build final payload ────────────────────────────────────
+    // Build base payload - SAME as GraphAPI
     const payload = {
       messaging_product: 'whatsapp',
-      to:                contact.phone,
-      type:              'template',
+      to: contact.phone,
+      type: 'template',
       template: {
-        name:     template.name,
-        language: { code: template.language || 'en_US' },
-        ...(templateComponents.length > 0 ? { components: templateComponents } : {}),
-      },
+        name: template.name,
+        language: { code: template.language || 'en_US' }
+      }
     }
 
-    // ── Fire and log ───────────────────────────────────────────
-    try {
-      const sendRes = await metaFetch(
-        `/${account.phone_number_id}/messages`,
-        'POST',
-        payload,
-        account.access_token
-      )
+    // ONLY add components if template has placeholders
+    const placeholders = (template.placeholders || []).slice().sort((a, b) => a.position - b.position)
+    
+    if (placeholders.length > 0) {
+      const bodyParams = placeholders.map(ph => {
+        const field = placeholderMapping[`{{${ph.position}}}`]
+        if (field === 'name') return contact.name || ''
+        if (field === 'phone') return contact.phone || ''
+        if (field === 'message') return contact.message || ''
+        const customVal = placeholderMapping[`custom_${ph.position}`]
+        return customVal || ph.sample || ''
+      })
+      
+      payload.template.components = [{
+        type: 'body',
+        parameters: bodyParams.map(v => ({ type: 'text', text: String(v) }))
+      }]
+    }
 
-      if (sendRes.ok && sendRes.data?.messages?.[0]?.id) {
-        const waMessageId = sendRes.data.messages[0].id
+    try {
+      const url = `https://graph.facebook.com/${META_API_VERSION}/${account.phone_number_id}/messages`
+      
+      const sendRes = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${account.access_token}`
+        },
+        body: JSON.stringify(payload)
+      })
+      
+      const responseData = await sendRes.json()
+
+      if (sendRes.ok && responseData.messages?.[0]?.id) {
+        const waMessageId = responseData.messages[0].id
         job.sent++
         job.log.push({ time: new Date().toISOString(), name: contact.name, phone: contact.phone, status: 'sent', error: null })
 
-        // Insert log row — delivery status will be updated by webhook
         await sbFetch('/wb_campaign_logs', {
           method: 'POST',
           body: JSON.stringify({
             campaign_id,
-            phone:           contact.phone,
-            contact_name:    contact.name || '',
-            status:          'sent',
+            phone: contact.phone,
+            contact_name: contact.name || '',
+            status: 'sent',
             delivery_status: 'sent',
-            wa_message_id:   waMessageId,
+            wa_message_id: waMessageId,
             credits_deducted: 1,
-            created_at:      new Date().toISOString(),
-            sent_at:         new Date().toISOString(),
+            created_at: new Date().toISOString(),
+            sent_at: new Date().toISOString(),
           }),
         })
-
-        // Update daily counter on the account row
-        await sbFetch(`/wa_accounts?id=eq.${account.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            messages_sent_today: (settings.sentToday || 0) + job.sent,
-            last_reset_date:     new Date().toISOString().split('T')[0],
-            updated_at:          new Date().toISOString(),
-          }),
-        })
-
       } else {
-        // Meta rejected the message
-        const errorMsg = sendRes.data?.error?.message || `Meta error code ${sendRes.status}`
-        console.error(`[send] failed for ${contact.phone}: ${errorMsg}`)
+        const errorMsg = responseData.error?.message || `Meta error: ${sendRes.status}`
         job.failed++
         job.log.push({ time: new Date().toISOString(), name: contact.name, phone: contact.phone, status: 'failed', error: errorMsg })
 
@@ -671,19 +640,17 @@ async function runSendLoop(campaign_id) {
           method: 'POST',
           body: JSON.stringify({
             campaign_id,
-            phone:           contact.phone,
-            contact_name:    contact.name || '',
-            status:          'failed',
+            phone: contact.phone,
+            contact_name: contact.name || '',
+            status: 'failed',
             delivery_status: 'failed',
-            error_reason:    errorMsg,
+            error_reason: errorMsg,
             credits_deducted: 0,
-            created_at:      new Date().toISOString(),
+            created_at: new Date().toISOString(),
           }),
         })
       }
     } catch (err) {
-      // Network / timeout error — log as failed, keep going
-      console.error(`[send] exception for ${contact.phone}: ${err.message}`)
       job.failed++
       job.log.push({ time: new Date().toISOString(), name: contact.name, phone: contact.phone, status: 'failed', error: err.message })
 
@@ -691,48 +658,44 @@ async function runSendLoop(campaign_id) {
         method: 'POST',
         body: JSON.stringify({
           campaign_id,
-          phone:           contact.phone,
-          contact_name:    contact.name || '',
-          status:          'failed',
+          phone: contact.phone,
+          contact_name: contact.name || '',
+          status: 'failed',
           delivery_status: 'failed',
-          error_reason:    err.message,
+          error_reason: err.message,
           credits_deducted: 0,
-          created_at:      new Date().toISOString(),
+          created_at: new Date().toISOString(),
         }),
       })
     }
 
-    // Update campaign stats in DB every message
     await sbFetch(`/wb_campaigns?id=eq.${campaign_id}`, {
       method: 'PATCH',
       body: JSON.stringify({
-        sent_count:   job.sent,
+        sent_count: job.sent,
         failed_count: job.failed,
-        updated_at:   new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       }),
     })
 
-    // Gap between messages (skip after last one)
     if (i < contacts.length - 1 && job.status === 'running') {
       await randomDelay(settings.minGap, settings.maxGap)
     }
   }
 
-  // Loop finished naturally
   if (job.status === 'running') {
     job.status = 'completed'
     await sbFetch(`/wb_campaigns?id=eq.${campaign_id}`, {
       method: 'PATCH',
       body: JSON.stringify({
-        status:       'completed',
+        status: 'completed',
         completed_at: new Date().toISOString(),
-        updated_at:   new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       }),
     })
     console.log(`[campaign] ${campaign_id} completed — sent:${job.sent} failed:${job.failed}`)
   }
 }
-
 // ================================================================
 // META WEBHOOK — VERIFICATION
 // ================================================================
