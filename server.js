@@ -409,7 +409,7 @@ app.post('/api/campaign/start', async (req, res) => {
     if (template.status !== 'APPROVED')
       return res.status(400).json({ error: 'Template is not approved' })
 
-    let contactQuery = `/wb_contacts?user_id=eq.${user_id}&status=ne.unsubscribed&optin=eq.true&order=created_at.asc`
+    let contactQuery = `/wb_contacts?user_id=eq.${user_id}&status=ne.unsubscribed&order=created_at.asc`
     if (campaign.group_name) contactQuery += `&group_name=eq.${encodeURIComponent(campaign.group_name)}`
     const contactsRes = await sbFetch(contactQuery)
     let contacts = contactsRes.data || []
