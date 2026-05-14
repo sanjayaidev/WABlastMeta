@@ -1898,12 +1898,27 @@ function renderTemplates() {
       </div>
     </div>`).join('')
 }
+
+  function loadTemplatesForCampaignSelect() {
+  const select = document.getElementById('campaignTemplateSelect')
+  if (!select) return
+  const approved = templates.filter(t => t.status === 'APPROVED')
+  if (!approved.length) {
+    select.innerHTML = '<option value="">— No approved templates —</option>'
+  } else {
+    select.innerHTML = approved.map(t =>
+      `<option value="${t.id}">${escapeHtml(t.name)}</option>`
+    ).join('')
+    loadTemplatePlaceholders()
+  }
+}
 async function refreshTemplateStatus() {
-  const btn = event.target;
+  const btn = event ? event.target : document.querySelector('#templateList + button');
+  if (!btn) return;
   const originalText = btn.textContent;
   btn.textContent = '⟳ Refreshing...';
   btn.disabled = true;
-  
+
   try {
     const res = await callEdge('listTemplates', { include_pending: true });
     if (res.success && res.templates) {
@@ -1921,6 +1936,7 @@ async function refreshTemplateStatus() {
     btn.disabled = false;
   }
 }
+  
 function previewTemplate(id) {
   const tpl = templates.find(t => t.id === id)
   if (!tpl) return
@@ -2404,11 +2420,11 @@ function toggleCustomInput(pos) {
 }
 
 async function createCampaign() {
-  const name       = document.getElementById('campaignName').value.trim()
+  const name = document.getElementById('campaignName').value.trim()
   const templateId = document.getElementById('campaignTemplateSelect').value
-  const groupName  = document.getElementById('campaignGroupSelect').value || null
-  
-  if (!name)       { showToast('Campaign name required', true); return }
+  const groupName = document.getElementById('campaignGroupSelect').value || null
+
+  if (!name) { showToast('Campaign name required', true); return }
   if (!templateId) { showToast('Select an approved template', true); return }
 
   // Get contact count first
@@ -2418,7 +2434,7 @@ async function createCampaign() {
     if (groupName) {
       url += `&group_name=eq.${encodeURIComponent(groupName)}`
     }
-    
+
     const res = await fetch(SUPABASE_URL + url, {
       headers: {
         'apikey': SUPABASE_ANON_KEY,
@@ -2438,7 +2454,7 @@ async function createCampaign() {
 
   const tpl = templates.find(t => t.id === templateId)
   const placeholderMapping = {}
-  
+
   if (tpl?.placeholders && tpl.placeholders.length > 0) {
     for (const ph of tpl.placeholders) {
       const sel = document.getElementById(`campMap_${ph.position}`)
@@ -2467,30 +2483,12 @@ async function createCampaign() {
     showToast(`Campaign created! ${totalContacts} contacts will receive this message.`)
     document.getElementById('campaignName').value = ''
     await loadCampaigns()
-    // Reset the group select count display
     updateCampaignContactCount()
   } else {
     showToast(res.message || 'Create failed', true)
   }
 }
- const groupName = document.getElementById('campaignGroupSelect').value || null
 
-  const res = await callEdge('createCampaign', {
-    name,
-    template_id:         templateId,
-    group_name:          groupName,
-    contact_ids:         [],
-    placeholder_mapping: placeholderMapping,
-  })
-
-  if (res.success) {
-    showToast('Campaign created!')
-    document.getElementById('campaignName').value = ''
-    await loadCampaigns()
-  } else {
-    showToast(res.message || 'Create failed', true)
-  }
-}
 
 async function loadCampaigns() {
   const res = await callEdge('getCampaignStats', {})
