@@ -2442,35 +2442,10 @@ async function createCampaign() {
   if (!name) { showToast('Campaign name required', true); return }
   if (!templateId) { showToast('Select an approved template', true); return }
 
-  // Get contact count first
-  let totalContacts = 0
-  try {
-    let url = `/rest/v1/wb_contacts?user_id=eq.${currentUser.id}&status=ne.unsubscribed&select=id`
-    if (groupName) {
-      url += `&group_name=eq.${encodeURIComponent(groupName)}`
-    }
-
-    const res = await fetch(SUPABASE_URL + url, {
-      headers: {
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${authToken}`
-      }
-    })
-    const contactsData = await res.json()
-    totalContacts = contactsData.length || 0
-  } catch (err) {
-    console.error('Failed to count contacts', err)
-  }
-
-  if (totalContacts === 0) {
-    showToast(`No contacts found${groupName ? ` in group "${groupName}"` : ''}. Please import contacts first.`, true)
-    return
-  }
-
   const tpl = templates.find(t => t.id === templateId)
   const placeholderMapping = {}
 
-  if (tpl?.placeholders && tpl.placeholders.length > 0) {
+  if (tpl?.placeholders?.length) {
     for (const ph of tpl.placeholders) {
       const sel = document.getElementById(`campMap_${ph.position}`)
       if (!sel) continue
@@ -2495,15 +2470,14 @@ async function createCampaign() {
   })
 
   if (res.success) {
-    showToast(`Campaign created! ${totalContacts} contacts will receive this message.`)
+    showToast(`Campaign created! ${res.total_contacts} contacts queued.`)
     document.getElementById('campaignName').value = ''
     await loadCampaigns()
-    updateCampaignContactCount()
+    loadGroupsForSelect()
   } else {
     showToast(res.message || 'Create failed', true)
   }
 }
-
 
 async function loadCampaigns() {
   const res = await callEdge('getCampaignStats', {})
