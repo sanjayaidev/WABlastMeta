@@ -388,7 +388,7 @@ app.get('/api/wa/accounts', async (req, res) => {
 })
 
 // ================================================================
-// CAMPAIGN — START
+// CAMPAIGN — START (FIXED)
 // ================================================================
 app.post('/api/campaign/start', async (req, res) => {
   const { campaign_id, user_id } = req.body
@@ -399,30 +399,53 @@ app.post('/api/campaign/start', async (req, res) => {
     return res.status(400).json({ error: 'Campaign already running' })
 
   try {
+    // Get campaign
     const campRes = await sbFetch(`/wb_campaigns?id=eq.${campaign_id}&user_id=eq.${user_id}&limit=1`)
     const campaign = campRes.data?.[0]
     if (!campaign) return res.status(404).json({ error: 'Campaign not found' })
 
+    // Get template
     const tplRes = await sbFetch(`/wb_templates?id=eq.${campaign.template_id}&limit=1`)
     const template = tplRes.data?.[0]
     if (!template) return res.status(404).json({ error: 'Template not found' })
     if (template.status !== 'APPROVED')
       return res.status(400).json({ error: 'Template is not approved' })
 
-    let contactQuery = `/wb_contacts?user_id=eq.${user_id}&status=ne.unsubscribed&order=created_at.asc`
-    if (campaign.group_name) contactQuery += `&group_name=eq.${encodeURIComponent(campaign.group_name)}`
+    // FIX: Build contact query properly
+    // Don't filter by status - all contacts are 'pending' initially
+    let contactQuery = `/wb_contacts?user_id=eq.${user_id}&select=*`
+    
+    // Only filter by group_name if campaign has one (and it's not empty/null)
+    if (campaign.group_name && campaign.group_name.trim() !== '') {
+      contactQuery += `&group_name=eq.${encodeURIComponent(campaign.group_name)}`
+    }
+    // If no group_name or empty string, get ALL contacts (no group filter)
+    
+    console.log(`[campaign] Fetching contacts with query: ${contactQuery}`)
+    
     const contactsRes = await sbFetch(contactQuery)
     let contacts = contactsRes.data || []
-    if (!contacts.length) return res.status(400).json({ error: 'No contacts found' })
     
+    console.log(`[campaign] Found ${contacts.length} total contacts before filtering`)
+    
+    if (!contacts.length) {
+      const groupInfo = campaign.group_name ? ` in group "${campaign.group_name}"` : ''
+      return res.status(400).json({ error: `No contacts found${groupInfo}. Please import contacts first.` })
+    }
+    
+    // Check for blocklisted numbers
     const blocklistRes = await sbFetch(`/wb_blocklist?user_id=eq.${user_id}&select=phone`)
     const blockedPhones = blocklistRes.data?.map(b => b.phone) || []
     const filteredContacts = contacts.filter(c => !blockedPhones.includes(c.phone))
     
-    if (!filteredContacts.length) return res.status(400).json({ error: 'All contacts are blocklisted' })
+    console.log(`[campaign] After blocklist filter: ${filteredContacts.length} contacts`)
+    
+    if (!filteredContacts.length) 
+      return res.status(400).json({ error: 'All contacts are blocklisted' })
     
     contacts = filteredContacts
 
+    // Get WhatsApp account
     const accountRes = await sbFetch(`/wa_accounts?user_id=eq.${user_id}&is_active=eq.true&limit=1`)
     const account = accountRes.data?.[0]
     if (!account) return res.status(400).json({ error: 'No WhatsApp account connected' })
@@ -437,9 +460,11 @@ app.post('/api/campaign/start', async (req, res) => {
       console.log(`[warning] User ${user_id} has YELLOW quality rating`)
     }
 
+    // Get user settings
     const settingsRes = await sbFetch(`/wb_settings?user_id=eq.${user_id}&limit=1`)
     const settings = settingsRes.data?.[0] || {}
     
+    // Check daily limit
     const dailyLimit = settings.day_limit || 0
     if (dailyLimit > 0 && (account.messages_sent_today || 0) >= dailyLimit) {
       return res.status(400).json({ 
@@ -447,6 +472,7 @@ app.post('/api/campaign/start', async (req, res) => {
       })
     }
 
+    // Check credits
     const profileRes = await sbFetch(`/wb_profiles?id=eq.${user_id}&limit=1`)
     const profile = profileRes.data?.[0]
     if (!profile || profile.credits < contacts.length)
@@ -457,6 +483,7 @@ app.post('/api/campaign/start', async (req, res) => {
     const minGap = (settings.min_gap || 5) * 1000
     const maxGap = (settings.max_gap || 15) * 1000
 
+    // Get existing campaign state if paused
     const existing = activeCampaigns[campaign_id]
     const startIndex = existing?.status === 'paused' ? existing.currentIndex : 0
 
@@ -474,11 +501,17 @@ app.post('/api/campaign/start', async (req, res) => {
       log:          existing?.log     || [],
     }
 
+    // Update campaign status in DB
     await sbFetch(`/wb_campaigns?id=eq.${campaign_id}`, {
       method: 'PATCH',
-      body:   JSON.stringify({ status: 'running', started_at: new Date().toISOString() }),
+      body:   JSON.stringify({ 
+        status: 'running', 
+        total_contacts: contacts.length,
+        started_at: new Date().toISOString() 
+      }),
     })
 
+    // Start the send loop
     runSendLoop(campaign_id)
 
     res.json({
@@ -492,7 +525,6 @@ app.post('/api/campaign/start', async (req, res) => {
     res.status(500).json({ error: err.message })
   }
 })
-
 // ================================================================
 // CAMPAIGN — PAUSE
 // ================================================================
