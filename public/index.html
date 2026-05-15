@@ -2885,12 +2885,7 @@ async function sendStart() {
   btn.textContent = '⏳ Starting…'
 
   try {
-    const res = await fetch('/api/campaign/start', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ campaign_id: activeSendCampaignId }),
-    }).then(r => r.json())
-
+    const res = await callEdge('campaignStart', { campaign_id: activeSendCampaignId })
     if (res.success) {
       showToast('▶ Campaign started!')
       document.getElementById('sendCurrentStatus').textContent = 'Running…'
@@ -2911,11 +2906,7 @@ async function sendStart() {
 async function sendPause() {
   if (!activeSendCampaignId) return
 
-  const res = await fetch('/api/campaign/pause', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ campaign_id: activeSendCampaignId }),
-  }).then(r => r.json())
+  const res = await callEdge('campaignPause', { campaign_id: activeSendCampaignId })
 
   if (res.success) {
     showToast('⏸ Campaign paused')
@@ -2932,11 +2923,7 @@ async function sendStop() {
   if (!activeSendCampaignId) return
   if (!confirm('Stop this campaign? Unsent credits will be refunded.')) return
 
-  const res = await fetch('/api/campaign/stop', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ campaign_id: activeSendCampaignId }),
-  }).then(r => r.json())
+ const res = await callEdge('campaignStop', { campaign_id: activeSendCampaignId })
 
   if (res.success) {
     const refunded = res.refunded || 0
@@ -2957,11 +2944,7 @@ async function sendDelete() {
   if (!activeSendCampaignId) return
   if (!confirm('Delete this campaign? This cannot be undone.')) return
 
-  const res = await fetch('/api/campaign/delete', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ campaign_id: activeSendCampaignId }),
-  }).then(r => r.json())
+ const res = await callEdge('deleteCampaign', { campaign_id: activeSendCampaignId })
 
   if (res.success) {
     const refunded = res.refunded || 0
@@ -2995,7 +2978,7 @@ async function pollSendStatus(id) {
 
   let res
   try {
-    res = await fetch(`/api/campaign/status/${campaignId}`).then(r => r.json())
+    res = await callEdge('campaignQueueStatus', { campaign_id: campaignId })
   } catch (err) {
     console.error('Poll fetch error:', err)
     return
@@ -3040,11 +3023,7 @@ async function pollSendStatus(id) {
 async function deleteCampaignFromList(id) {
   if (!confirm('Delete this campaign? This cannot be undone.')) return
 
-  const res = await fetch('/api/campaign/delete', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ campaign_id: id }),
-  }).then(r => r.json())
+  const res = await callEdge('deleteCampaign', { campaign_id: id })
 
   if (res.success) {
     showToast('Campaign deleted')
