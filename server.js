@@ -1,4 +1,4 @@
-// server.js — WaBlast Express Server (Queue-based)
+// server.js — WaBlast Express Server (Queue-based v2)
 // Handles: static files, WA OAuth, webhooks, queue processing via Edge
 
 require('dotenv').config()
@@ -49,19 +49,15 @@ async function sbFetch(path, opts = {}) {
   catch (_) { return { ok: res.ok, status: res.status, data: text } }
 }
 
-// Shared secret — must match INTERNAL_SECRET in the edge function env
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET || 'wablast-internal-secret'
 
-// All edge calls from server.js use a custom header — NOT Authorization.
-// Supabase strips/re-signs the Authorization header on ingress, so a raw
-// service key comparison there always fails.
 async function callEdge(action, body = {}) {
   const res = await fetch(EDGE_FN_URL, {
     method: 'POST',
     headers: {
       'Content-Type':      'application/json',
-      'Authorization':     `Bearer ${SUPABASE_KEY}`,  // still needed to reach the function
-      'x-internal-secret': INTERNAL_SECRET,            // used for the actual auth check
+      'Authorization':     `Bearer ${SUPABASE_KEY}`,
+      'x-internal-secret': INTERNAL_SECRET,
     },
     body: JSON.stringify({ action, ...body }),
   })
@@ -90,7 +86,7 @@ app.get('/privacy', (_req, res) => res.sendFile(path.join(__dirname, 'public', '
 app.get('/terms',   (_req, res) => res.sendFile(path.join(__dirname, 'public', 'terms.html')))
 
 // ================================================================
-// WA OAuth
+// WA OAuth (unchanged)
 // ================================================================
 app.get('/wa-connect', (_req, res) => {
   if (!META_APP_ID) return res.status(500).send('META_APP_ID not configured')
@@ -164,7 +160,6 @@ app.post('/api/wa/connect', async (req, res) => {
   if (!code || !user_id) return res.status(400).json({ error: 'Missing code or user_id' })
 
   try {
-    // Exchange code for token
     const tokenRes  = await fetch(
       `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token` +
       `?client_id=${META_APP_ID}&client_secret=${META_APP_SECRET}&code=${encodeURIComponent(code)}`
@@ -174,7 +169,6 @@ app.post('/api/wa/connect', async (req, res) => {
 
     const accessToken = tokenData.access_token
 
-    // Get WABA
     const wabaRes  = await fetch(
       `https://graph.facebook.com/${META_API_VERSION}/me/whatsapp_business_accounts`,
       { headers: { 'Authorization': `Bearer ${accessToken}` } }
@@ -183,7 +177,6 @@ app.post('/api/wa/connect', async (req, res) => {
     const wabaId   = wabaData.data?.[0]?.id
     if (!wabaId) return res.status(400).json({ error: 'No WABA found' })
 
-    // Get phone numbers
     const phoneRes  = await fetch(
       `https://graph.facebook.com/${META_API_VERSION}/${wabaId}/phone_numbers` +
       `?fields=id,display_phone_number,verified_name,quality_rating`,
@@ -193,13 +186,11 @@ app.post('/api/wa/connect', async (req, res) => {
     const phone     = phoneData.data?.[0]
     if (!phone) return res.status(400).json({ error: 'No phone numbers found' })
 
-    // Subscribe app to WABA
     await fetch(
       `https://graph.facebook.com/${META_API_VERSION}/${wabaId}/subscribed_apps`,
       { method: 'POST', headers: { 'Authorization': `Bearer ${accessToken}` } }
     )
 
-    // Save to DB
     const insertRes = await sbFetch('/wa_accounts', {
       method: 'POST',
       body: JSON.stringify({
@@ -226,20 +217,34 @@ app.post('/api/wa/connect', async (req, res) => {
 })
 
 // ================================================================
-// CAMPAIGN ENDPOINTS
+// CAMPAIGN ENDPOINTS (v2)
 // ================================================================
 
-// Start — enqueue all contacts and begin processing
+// Start — marks campaign as running (queue already exists)
 app.post('/api/campaign/start', async (req, res) => {
-  const { campaign_id, user_id } = req.body
-  if (!campaign_id || !user_id)
-    return res.status(400).json({ error: 'campaign_id and user_id required' })
+  const { campaign_id } = req.body
+  if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' })
 
-  const result = await callEdge('campaignEnqueue', { campaign_id, user_id })
+  const result = await callEdge('campaignStart', { campaign_id })
   res.json(result)
 })
 
-// Pause — set campaign status to paused; processor checks this and skips
+// Delete campaign
+app.post('/api/campaign/delete', async (req, res) => {
+  const { campaign_id } = req.body
+  if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' })
+
+  const result = await callEdge('deleteCampaign', { campaign_id })
+  res.json(result)
+})
+
+// Get active campaign
+app.get('/api/campaign/active', async (_req, res) => {
+  const result = await callEdge('getActiveCampaign', {})
+  res.json(result)
+})
+
+// Pause
 app.post('/api/campaign/pause', async (req, res) => {
   const { campaign_id } = req.body
   if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' })
@@ -248,7 +253,7 @@ app.post('/api/campaign/pause', async (req, res) => {
   res.json(result)
 })
 
-// Stop — mark campaign as draft, delete pending queue items
+// Stop
 app.post('/api/campaign/stop', async (req, res) => {
   const { campaign_id } = req.body
   if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' })
@@ -257,7 +262,7 @@ app.post('/api/campaign/stop', async (req, res) => {
   res.json(result)
 })
 
-// Status — live stats for the send tab
+// Status
 app.get('/api/campaign/status/:campaign_id', async (req, res) => {
   const { campaign_id } = req.params
   const result = await callEdge('campaignQueueStatus', { campaign_id })
@@ -265,7 +270,7 @@ app.get('/api/campaign/status/:campaign_id', async (req, res) => {
 })
 
 // ================================================================
-// QUEUE PROCESSOR — called by internal setInterval every 2 seconds
+// QUEUE PROCESSOR
 // ================================================================
 app.post('/api/queue/process', async (req, res) => {
   const result = await callEdge('campaignProcessQueue', {})
@@ -273,7 +278,7 @@ app.post('/api/queue/process', async (req, res) => {
 })
 
 // ================================================================
-// META WEBHOOK
+// META WEBHOOK (unchanged)
 // ================================================================
 app.get('/webhook', (req, res) => {
   const mode      = req.query['hub.mode']
@@ -285,7 +290,7 @@ app.get('/webhook', (req, res) => {
 })
 
 app.post('/webhook', async (req, res) => {
-  res.sendStatus(200) // Acknowledge immediately
+  res.sendStatus(200)
 
   if (!verifyMetaSignature(req)) return
 
@@ -295,7 +300,6 @@ app.post('/webhook', async (req, res) => {
   for (const entry of (body.entry || [])) {
     for (const change of (entry.changes || [])) {
       if (change.field === 'messages') {
-        // Delivery status updates
         for (const status of (change.value?.statuses || [])) {
           await callEdge('internalDeliveryWebhook', {
             id:     status.id,
@@ -303,7 +307,6 @@ app.post('/webhook', async (req, res) => {
             errors: status.errors || [],
           }).catch(err => console.error('[webhook] delivery:', err.message))
         }
-        // Incoming messages → auto-reply (handled inside edge)
         for (const msg of (change.value?.messages || [])) {
           await callEdge('internalIncomingMessage', {
             wabaId:  entry.id,
@@ -325,7 +328,6 @@ app.post('/webhook', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`WaBlast server running on ${SELF_URL}`)
 
-  // Queue processor — fires every 2 seconds
   let processorBusy = false
   setInterval(async () => {
     if (processorBusy) return
@@ -339,7 +341,6 @@ app.listen(PORT, () => {
     }
   }, 2000)
 
-  // Self-pinger to prevent Render spin-down
   setInterval(async () => {
     try { await fetch(`${SELF_URL}/health`) } catch (_) {}
   }, 14 * 60 * 1000)
