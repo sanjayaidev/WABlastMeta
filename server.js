@@ -1,5 +1,6 @@
-// server.js — WaBlast Express Server (Queue-based v2)
+// server.js — WaBlast Express Server (Queue-based v2) — FIXED
 // Handles: static files, WA OAuth, webhooks, queue processing via Edge
+// ✅ Added: comprehensive webhook logging, better error handling, debug helpers
 
 require('dotenv').config()
 const express = require('express')
@@ -212,6 +213,7 @@ app.post('/api/wa/connect', async (req, res) => {
     if (!insertRes.ok) return res.status(500).json({ error: 'Failed to save account' })
     res.json({ success: true })
   } catch (err) {
+    console.error('[wa-connect] error:', err.message)
     res.status(500).json({ error: err.message })
   }
 })
@@ -224,8 +226,9 @@ app.post('/api/wa/connect', async (req, res) => {
 app.post('/api/campaign/start', async (req, res) => {
   const { campaign_id } = req.body
   if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' })
-
+  console.log('[campaign] start requested:', campaign_id)
   const result = await callEdge('campaignStart', { campaign_id })
+  console.log('[campaign] start result:', { campaign_id, success: result.success, message: result.message })
   res.json(result)
 })
 
@@ -233,8 +236,9 @@ app.post('/api/campaign/start', async (req, res) => {
 app.post('/api/campaign/delete', async (req, res) => {
   const { campaign_id } = req.body
   if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' })
-
+  console.log('[campaign] delete requested:', campaign_id)
   const result = await callEdge('deleteCampaign', { campaign_id })
+  console.log('[campaign] delete result:', { campaign_id, success: result.success, refunded: result.refunded })
   res.json(result)
 })
 
@@ -248,8 +252,9 @@ app.get('/api/campaign/active', async (_req, res) => {
 app.post('/api/campaign/pause', async (req, res) => {
   const { campaign_id } = req.body
   if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' })
-
+  console.log('[campaign] pause requested:', campaign_id)
   const result = await callEdge('campaignPause', { campaign_id })
+  console.log('[campaign] pause result:', { campaign_id, success: result.success })
   res.json(result)
 })
 
@@ -257,8 +262,9 @@ app.post('/api/campaign/pause', async (req, res) => {
 app.post('/api/campaign/stop', async (req, res) => {
   const { campaign_id } = req.body
   if (!campaign_id) return res.status(400).json({ error: 'campaign_id required' })
-
+  console.log('[campaign] stop requested:', campaign_id)
   const result = await callEdge('campaignStop', { campaign_id })
+  console.log('[campaign] stop result:', { campaign_id, success: result.success, refunded: result.refunded })
   res.json(result)
 })
 
@@ -278,45 +284,111 @@ app.post('/api/queue/process', async (req, res) => {
 })
 
 // ================================================================
-// META WEBHOOK (unchanged)
+// META WEBHOOK — ✅ FULLY LOGGED
 // ================================================================
 app.get('/webhook', (req, res) => {
   const mode      = req.query['hub.mode']
   const token     = req.query['hub.verify_token']
   const challenge = req.query['hub.challenge']
-  if (mode === 'subscribe' && token === META_VERIFY_TOKEN)
+  if (mode === 'subscribe' && token === META_VERIFY_TOKEN) {
+    console.log('[webhook] GET: verification successful, challenge sent')
     return res.status(200).send(challenge)
+  }
+  console.warn('[webhook] GET: verification FAILED', { mode, token_match: token === META_VERIFY_TOKEN })
   res.sendStatus(403)
 })
 
 app.post('/webhook', async (req, res) => {
+  // ✅ Log receipt FIRST (before sending 200)
+  console.log('[webhook] POST received:', {
+    timestamp: new Date().toISOString(),
+    object: req.body?.object,
+    entryCount: req.body?.entry?.length,
+    ip: req.ip || req.headers['x-forwarded-for']?.split(',')[0],
+    userAgent: req.headers['user-agent']?.substring(0, 50)
+  })
+
+  // ✅ Send 200 OK immediately per Meta requirement
   res.sendStatus(200)
 
-  if (!verifyMetaSignature(req)) return
+  // ✅ Verify signature
+  if (!verifyMetaSignature(req)) {
+    console.warn('[webhook] signature verification FAILED', {
+      hasSig: !!req.headers['x-hub-signature-256'],
+      appSecretSet: !!META_APP_SECRET
+    })
+    return
+  }
+  console.log('[webhook] signature verified ✓')
 
   const body = req.body
-  if (body.object !== 'whatsapp_business_account') return
+  if (body.object !== 'whatsapp_business_account') {
+    console.log('[webhook] ignored: not whatsapp_business_account', { object: body.object })
+    return
+  }
 
   for (const entry of (body.entry || [])) {
+    const wabaId = entry.id
     for (const change of (entry.changes || [])) {
-      if (change.field === 'messages') {
-        for (const status of (change.value?.statuses || [])) {
-          await callEdge('internalDeliveryWebhook', {
+      const field = change.field
+      const value = change.value
+
+      // ── Messages field: delivery statuses + incoming messages ──
+      if (field === 'messages') {
+        // Delivery status updates
+        for (const status of (value?.statuses || [])) {
+          console.log('[webhook] delivery update:', {
+            waMessageId: status.id,
+            status: status.status,
+            recipient: status.recipient_id,
+            timestamp: status.timestamp,
+            errors: status.errors?.[0]?.title || null,
+            wabaId
+          })
+          callEdge('internalDeliveryWebhook', {
             id:     status.id,
             status: status.status,
             errors: status.errors || [],
-          }).catch(err => console.error('[webhook] delivery:', err.message))
+          })
+          .then(r => console.log('[webhook] delivery edge response:', { id: status.id, success: r.success }))
+          .catch(err => console.error('[webhook] delivery edge ERROR:', err.message))
         }
-        for (const msg of (change.value?.messages || [])) {
-          await callEdge('internalIncomingMessage', {
-            wabaId:  entry.id,
+
+        // Incoming messages from users
+        for (const msg of (value?.messages || [])) {
+          console.log('[webhook] incoming message:', {
+            from: msg.from,
+            type: msg.type,
+            id: msg.id,
+            timestamp: msg.timestamp,
+            wabaId,
+            contactName: value?.contacts?.[0]?.profile?.name
+          })
+          callEdge('internalIncomingMessage', {
+            wabaId:  wabaId,
             message: msg,
-            contact: change.value?.contacts?.[0] || {},
-          }).catch(err => console.error('[webhook] incoming:', err.message))
+            contact: value?.contacts?.[0] || {},
+          })
+          .then(r => console.log('[webhook] incoming edge response:', { from: msg.from, success: r.success }))
+          .catch(err => console.error('[webhook] incoming edge ERROR:', err.message))
         }
-      } else if (change.field === 'message_template_status_update') {
-        await callEdge('internalTemplateWebhook', change.value)
-          .catch(err => console.error('[webhook] template:', err.message))
+
+      // ── Template status updates ──
+      } else if (field === 'message_template_status_update') {
+        console.log('[webhook] template status update:', {
+          templateName: value?.message_template_name,
+          templateId: value?.message_template_id,
+          event: value?.event,
+          reason: value?.reason,
+          wabaId
+        })
+        callEdge('internalTemplateWebhook', value)
+          .then(r => console.log('[webhook] template edge response:', { success: r.success }))
+          .catch(err => console.error('[webhook] template edge ERROR:', err.message))
+
+      // ── Other fields (log for debugging) ──
+      } else {
+        console.log('[webhook] unhandled field:', { field, wabaId })
       }
     }
   }
@@ -326,20 +398,34 @@ app.post('/webhook', async (req, res) => {
 // START SERVER
 // ================================================================
 app.listen(PORT, () => {
-  console.log(`WaBlast server running on ${SELF_URL}`)
-    let processorBusy = false
+  console.log(`✅ WaBlast server running on ${SELF_URL}`)
+  console.log(`   PORT: ${PORT}`)
+  console.log(`   ENV: ${process.env.NODE_ENV || 'development'}`)
+  
+  let processorBusy = false
+  
+  // Queue processor interval (every 3s)
   setInterval(async () => {
     if (processorBusy) return
     processorBusy = true
     try {
-      await fetch(`${SELF_URL}/api/queue/process`, { method: 'POST' })
+      const res = await fetch(`${SELF_URL}/api/queue/process`, { method: 'POST' })
+      const data = await res.json()
+      if (data?.processed > 0) {
+        console.log('[queue] processed:', { sent: data.sent, failed: data.failed, phone: data.phone })
+      }
     } catch (err) {
       console.error('[queue] processor error:', err.message)
     } finally {
       processorBusy = false
     }
   }, 3000)
+  
+  // Health check ping (every 14 min to keep Render awake)
   setInterval(async () => {
-    try { await fetch(`${SELF_URL}/health`) } catch (_) {}
+    try {
+      await fetch(`${SELF_URL}/health`)
+      console.log('[health] ping sent')
+    } catch (_) {}
   }, 14 * 60 * 1000)
 })
