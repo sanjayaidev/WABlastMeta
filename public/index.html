@@ -2826,18 +2826,19 @@ async function loadActiveCampaign() {
         startSendPolling(res.campaign.id)
       }
     } else {
-      activeSendCampaignId = null
-      document.getElementById('sendActiveCampaignInfo').innerHTML =
-        '<div class="empty-state"><div class="empty-icon">🚀</div><p>No active campaign. Create one in the Campaigns tab.</p></div>'
-      document.getElementById('sendStatsCard').style.display = 'none'
-      document.getElementById('sendLogCard').style.display = 'none'
-      resetSendStats()
+      // Only reset if there's truly nothing — don't wipe if we're just refreshing
+      if (!activeSendCampaignId) {
+        document.getElementById('sendActiveCampaignInfo').innerHTML =
+          '<div class="empty-state"><div class="empty-icon">🚀</div><p>No active campaign. Create one in the Campaigns tab.</p></div>'
+        document.getElementById('sendStatsCard').style.display = 'none'
+        document.getElementById('sendLogCard').style.display = 'none'
+        resetSendStats()
+      }
     }
   } catch (err) {
     console.error('Failed to load active campaign', err)
   }
 }
-
 function renderActiveCampaign(c) {
   const canStart = c.status === 'queued'
   const canPause = c.status === 'running'
@@ -3006,26 +3007,26 @@ async function pollSendStatus(id) {
     statusMap[res.status] || res.status || 'Ready'
 
   if (res.status === 'completed' || res.status === 'failed') {
-    stopSendPolling()
-    await loadCampaigns()
+  stopSendPolling()
+  await loadCampaigns()
 
-    // ← DON'T call loadActiveCampaign() immediately
-    // Show final state for 3 seconds, then refresh
-    if (res.status === 'completed') {
-      showToast('🎉 Campaign completed!')
-      const creditsRes = await callEdge('getCredits')
-      if (creditsRes.success) updateCreditUI(creditsRes.credits)
-    } else {
-      showToast('❌ Campaign failed — check Campaign Logs.', true)
-    }
+  // Update button visibility — show only Delete, hide Start/Pause/Stop
+  document.getElementById('sendStartBtn').style.display  = 'none'
+  document.getElementById('sendPauseBtn').style.display  = 'none'
+  document.getElementById('sendStopBtn').style.display   = 'none'
+  document.getElementById('sendDeleteBtn').style.display = ''
 
-    // Wait 3 seconds so user sees 100% before card disappears
-    setTimeout(async () => {
-      activeSendCampaignId = null
-      await loadActiveCampaign()
-    }, 3000)
+  if (res.status === 'completed') {
+    showToast('🎉 Campaign completed!')
+    document.getElementById('sendCurrentStatus').textContent = 'Completed ✅'
+    const creditsRes = await callEdge('getCredits')
+    if (creditsRes.success) updateCreditUI(creditsRes.credits)
+  } else {
+    showToast('❌ Campaign failed — check Campaign Logs.', true)
+    document.getElementById('sendCurrentStatus').textContent = 'Failed ❌'
   }
-
+  return
+}
   if (res.status === 'paused') stopSendPolling()
 }
   
