@@ -328,19 +328,6 @@ app.post('/webhook', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`WaBlast server running on ${SELF_URL}`)
 
-  let processorBusy = false
-  setInterval(async () => {
-    if (processorBusy) return
-    processorBusy = true
-    try {
-      await fetch(`${SELF_URL}/api/queue/process`, { method: 'POST' })
-    } catch (err) {
-      console.error('[queue] processor error:', err.message)
-    } finally {
-      processorBusy = false
-    }
-  }, 2000)
-
   setInterval(async () => {
     try { await fetch(`${SELF_URL}/health`) } catch (_) {}
   }, 14 * 60 * 1000)
