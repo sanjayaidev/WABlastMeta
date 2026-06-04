@@ -91,24 +91,32 @@ app.get('/terms',   (_req, res) => res.sendFile(path.join(__dirname, 'public', '
 // ================================================================
 app.get('/wa-connect', (_req, res) => {
   if (!META_APP_ID) return res.status(500).send('META_APP_ID not configured')
+  if (!META_CONFIG_ID) return res.status(500).send('META_CONFIG_ID not configured')
   res.send(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Connect WhatsApp</title>
 <style>
   body{font-family:sans-serif;background:#0a0c12;color:#edf2f9;display:flex;
        flex-direction:column;align-items:center;justify-content:center;
-       min-height:100vh;margin:0;gap:16px;}
+       min-height:100vh;margin:0;gap:16px;padding:20px;text-align:center;}
   button{background:#25d366;color:#000;border:none;padding:14px 28px;
-         border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;}
+         border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;
+         transition:opacity .15s;}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+  #status{font-size:13px;color:#7a90b0;min-height:20px;}
 </style>
 </head>
 <body>
-  <div style="font-size:32px">💬</div>
-  <h2>Connect WhatsApp Number</h2>
-  <button onclick="launchSignup()">Connect via Meta</button>
+  <div style="font-size:40px">💬</div>
+  <h2 style="font-size:20px;">Connect WhatsApp Business Number</h2>
+  <p style="font-size:13px;color:#7a90b0;max-width:320px;">
+    You'll be redirected to Meta to log in and connect your WhatsApp Business Account.
+  </p>
+  <button id="connectBtn" onclick="launchSignup()">Connect via Meta Login</button>
   <div id="status"></div>
 <script>
   window.fbAsyncInit = function() {
     FB.init({ appId: '${META_APP_ID}', cookie: true, xfbml: true, version: '${META_API_VERSION}' })
+    FB.AppEvents.logPageView()
   };
   (function(d,s,id){
     var js, fjs = d.getElementsByTagName(s)[0]
@@ -118,21 +126,28 @@ app.get('/wa-connect', (_req, res) => {
     fjs.parentNode.insertBefore(js, fjs)
   }(document, 'script', 'facebook-jssdk'))
 
-  function setStatus(msg) { document.getElementById('status').textContent = msg }
+  function setStatus(msg, isErr) {
+    var el = document.getElementById('status')
+    el.textContent = msg
+    el.style.color = isErr ? '#f04f6e' : '#7a90b0'
+  }
 
   function launchSignup() {
-    setStatus('Opening Meta login...')
-    document.querySelector('button').disabled = true
+    var btn = document.getElementById('connectBtn')
+    btn.disabled = true
+    setStatus('Opening Meta login…')
     FB.login(function(response) {
       if (response.authResponse) {
         var code = response.authResponse.code
-        setStatus('Connected! Saving...')
-        if (window.opener) window.opener.postMessage({ type: 'WA_CODE', code: code }, '*')
+        setStatus('✅ Connected! Saving your number…')
+        if (window.opener) {
+          window.opener.postMessage({ type: 'WA_CODE', code: code }, '*')
+        }
         setStatus('Done! You can close this window.')
-        setTimeout(function() { window.close() }, 1500)
+        setTimeout(function() { window.close() }, 2000)
       } else {
-        setStatus('Cancelled')
-        document.querySelector('button').disabled = false
+        setStatus('Login cancelled or failed. Please try again.', true)
+        btn.disabled = false
       }
     }, {
       config_id: '${META_CONFIG_ID}',
