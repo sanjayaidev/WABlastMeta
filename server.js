@@ -747,14 +747,22 @@ renderStep(1)
 </html>`)
 })
 
-// ── Demo connect API — saves the hardcoded number to DB ──
 app.post('/api/wa/connect-demo', async (req, res) => {
   const { waba_id, waba_name, phone_number_id, phone_number, display_name } = req.body
 
-  // Use hardcoded system user token for demo (from your env)
+  // Try to get user_id from auth header if present
+  let user_id = null
+  const authHeader = req.headers['authorization'] || ''
+  const token = authHeader.replace('Bearer ', '').trim()
+  if (token) {
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString())
+      user_id = payload.sub
+    } catch (_) {}
+  }
+
   const DEMO_TOKEN = process.env.DEMO_SYSTEM_USER_TOKEN || process.env.META_SYSTEM_USER_TOKEN || ''
 
-  // Subscribe app to WABA webhooks
   if (DEMO_TOKEN && waba_id) {
     try {
       await fetch(
@@ -764,14 +772,12 @@ app.post('/api/wa/connect-demo', async (req, res) => {
     } catch (_) {}
   }
 
-  // Upsert into wa_accounts using service key
   const insertRes = await sbFetch('/wa_accounts', {
     method: 'POST',
     headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' },
     body: JSON.stringify({
-      // No user_id — this is a shared demo account
-      // In production you'd get user_id from session
-      waba_id:         waba_id         || process.env.DEMO_WABA_ID        || '1491368952771238',
+      user_id,
+      waba_id:         waba_id         || process.env.DEMO_WABA_ID         || '1491368952771238',
       phone_number_id: phone_number_id || process.env.DEMO_PHONE_NUMBER_ID || '',
       phone_number:    phone_number    || process.env.DEMO_PHONE_NUMBER    || '',
       display_name:    display_name    || 'Demo Number',
@@ -787,13 +793,11 @@ app.post('/api/wa/connect-demo', async (req, res) => {
 
   if (!insertRes.ok) {
     console.error('[wa-connect-demo] DB insert failed:', insertRes.data)
-    // Still return success for demo/reviewer flow
-    return res.json({ success: true, demo: true })
   }
 
+  // Always return success so popup flow completes
   res.json({ success: true, demo: true })
 })
-
 // ================================================================
 // CAMPAIGN ENDPOINTS (v2)
 // ================================================================
